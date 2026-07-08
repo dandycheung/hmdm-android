@@ -19,17 +19,21 @@ import com.hmdm.launcher.util.LegacyUtils;
 import com.hmdm.launcher.util.RemoteLogger;
 import com.hmdm.launcher.util.Utils;
 
+import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.file.Files;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
+import java.security.cert.Certificate;
 import java.util.Enumeration;
 import java.util.LinkedList;
 import java.util.List;
@@ -46,6 +50,16 @@ public class CertInstaller {
         public CertEntry(String path, String cert) {
             this.path = path;
             this.cert = cert;
+        }
+    }
+
+    static class ClientCertEntry {
+        public String path;
+        public String password;
+        public ClientCertEntry() {}
+        public ClientCertEntry(String path, String password) {
+            this.path = path;
+            this.password = password;
         }
     }
 
@@ -104,6 +118,35 @@ public class CertInstaller {
         return result;
     }
 
+    public static List<ClientCertEntry> getClientCertificatesFromFiles(Context context, String paths) {
+        String[] names = paths.split(",");
+        List<ClientCertEntry> result = new LinkedList<>();
+        for (String name : names) {
+            String adjustedName = name;
+            if (!adjustedName.startsWith("/storage/emulated/0/")) {
+                if (!adjustedName.startsWith("/")) {
+                    adjustedName = "/" + adjustedName;
+                }
+                adjustedName = "/storage/emulated/0" + adjustedName;
+            }
+            // Extract password from path:password format (password after the last colon)
+            String password = "";
+            String certPath = adjustedName;
+            int lastColonIndex = adjustedName.lastIndexOf(':');
+            if (lastColonIndex > adjustedName.lastIndexOf('/')) {
+                certPath = adjustedName.substring(0, lastColonIndex);
+                password = adjustedName.substring(lastColonIndex + 1);
+            }
+            File certFile = new File(certPath);
+            if (!certFile.exists()) {
+                RemoteLogger.log(context, Const.LOG_WARN, "Client certificate file not found: " + certPath);
+                continue;
+            }
+            result.add(new ClientCertEntry(certPath, password));
+        }
+        return result;
+    }
+
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     public static boolean installCertificate(Context context, String cert, String path, boolean remoteLog) {
         try {
@@ -135,6 +178,54 @@ public class CertInstaller {
         }
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.Q)
+    public static boolean installClientCertificate(Context context, String path, String password, boolean remoteLog) {
+        try {
+            File certFile = new File(path);
+            byte[] pkcs12Data = Files.readAllBytes(certFile.toPath());
+            KeyStore ks = KeyStore.getInstance("PKCS12");
+            ks.load(new ByteArrayInputStream(pkcs12Data), password.isEmpty() ? null : password.toCharArray());
+            Enumeration<String> aliases = ks.aliases();
+            while (aliases.hasMoreElements()) {
+                String alias = aliases.nextElement();
+                if (ks.isKeyEntry(alias)) {
+                    Certificate[] chain = ks.getCertificateChain(alias);
+                    if (chain != null && chain.length > 0) {
+                        PrivateKey privateKey = (PrivateKey) ks.getKey(alias, password.isEmpty() ? null : password.toCharArray());
+                        if (privateKey != null) {
+                            DevicePolicyManager dpm = (DevicePolicyManager) context.getSystemService(Context.DEVICE_POLICY_SERVICE);
+                            ComponentName adminComponentName = LegacyUtils.getAdminComponentName(context);
+                            boolean res = dpm.installKeyPair(adminComponentName, privateKey, chain, alias, false);
+                            if (remoteLog) {
+                                if (res) {
+                                    RemoteLogger.log(context, Const.LOG_INFO, "Client certificate installed: " + path);
+                                } else {
+                                    RemoteLogger.log(context, Const.LOG_WARN, "Failed to install client certificate: " + path);
+                                }
+                            } else {
+                                if (res) {
+                                    Log.d(Const.LOG_TAG, "Client certificate installed: " + path);
+                                } else {
+                                    Log.w(Const.LOG_TAG, "Failed to install client certificate: " + path);
+                                }
+                            }
+                            return res;
+                        }
+                    }
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            if (remoteLog) {
+                RemoteLogger.log(context, Const.LOG_WARN, "Failed to install client certificate " + path + ": " + e.getMessage());
+            } else {
+                Log.w(Const.LOG_TAG, "Failed to install client certificate " + path + ": " + e.getMessage());
+            }
+            e.printStackTrace();
+            return false;
+        }
+    }
+
     public static void installCertificatesFromAssets(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
             return;
@@ -160,6 +251,19 @@ public class CertInstaller {
         }
         for (CertEntry cert : certs) {
             installCertificate(context, cert.cert, cert.path, true);
+        }
+    }
+
+    public static void installClientCertificatesFromFiles(Context context, String paths) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return;
+        }
+        List<ClientCertEntry> certs = getClientCertificatesFromFiles(context, paths);
+        if (certs == null || certs.size() == 0) {
+            return;
+        }
+        for (ClientCertEntry cert : certs) {
+            installClientCertificate(context, cert.path, cert.password, true);
         }
     }
 

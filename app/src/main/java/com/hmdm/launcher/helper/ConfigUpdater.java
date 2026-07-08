@@ -719,11 +719,17 @@ public class ConfigUpdater {
 
     private void installCertificates() {
         final String certPaths = settingsHelper.getAppPreference(context.getPackageName(), "certificates");
-        if (certPaths != null) {
+        final String clientCertPaths = settingsHelper.getAppPreference(context.getPackageName(), "client-certificates");
+        if (certPaths != null || clientCertPaths != null) {
             new AsyncTask<Void, Void, Void>() {
                 @Override
                 protected Void doInBackground(Void... voids) {
-                    CertInstaller.installCertificatesFromFiles(context, certPaths.trim());
+                    if (certPaths != null) {
+                        CertInstaller.installCertificatesFromFiles(context, certPaths.trim());
+                    }
+                    if (clientCertPaths != null) {
+                        CertInstaller.installClientCertificatesFromFiles(context, clientCertPaths.trim());
+                    }
                     return null;
                 }
 
